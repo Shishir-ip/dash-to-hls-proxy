@@ -337,7 +337,7 @@ function getBaseUrl(mpdXml, mpdUrl) {
   const ismlMatch = mpdUrl.match(/(.*\.isml\/)/);
   if (ismlMatch) {
     const base = ismlMatch[1];
-    const baseMatch = mpdXml.match(/<(?:[a-zA-Z0-9_]+:)?BaseURL(?:\\s[^>]*)?>([^<]*)<\/(?:[a-zA-Z0-9_]+:)?BaseURL>/i);
+    const baseMatch = mpdXml.match(/<(?:[a-zA-Z0-9_]+:)?BaseURL(?:\s[^>]*)?>([^<]*)<\/(?:[a-zA-Z0-9_]+:)?BaseURL>/i);
     if (baseMatch) {
       const txt = baseMatch[1].trim();
       return base + (txt.endsWith('/') ? txt : txt + '/');
@@ -559,6 +559,64 @@ const server = http.createServer(async (req, res) => {
       const clear = decryptCENC(data, CLEAR_KEY_HEX);
       res.writeHead(200, { ...cors, 'Content-Type': 'video/mp4', 'Cache-Control': 'max-age=2' });
       res.end(clear);
+      return;
+    }
+
+    // ========== DEBUG ENDPOINT ==========
+    if (path === '/debug-segment') {
+      const segUrl = parsedUrl.query.url || 'https://c9851ec-rbm-hilv-fsly.cdn.redbee.live/L26/6b640fa2/a765d074.isml/dash/a765d074-video=3500000-1069699069536.dash';
+      
+      try {
+        const data = await fetch(segUrl);
+        const boxes = parseBoxes(data);
+        const moof = boxes.find(b => b.type === 'moof');
+        const mdat = boxes.find(b => b.type === 'mdat');
+        
+        let sencFound = false, sencSize = 0, saioFound = false, saizFound = false;
+        if (moof) {
+          const sencBox = findBoxDeep(moof.data, 'senc');
+          if (sencBox) { sencFound = true; sencSize = sencBox.length; }
+          saioFound = !!findBoxDeep(moof.data, 'saio');
+          saizFound = !!findBoxDeep(moof.data, 'saiz');
+        }
+        
+        let decryptResult = 'Not attempted';
+        let nalCheck = 'no mdat';
+        try {
+          const clear = decryptCENC(data, CLEAR_KEY_HEX);
+          const clearBoxes = parseBoxes(clear);
+          const clearMdat = clearBoxes.find(b => b.type === 'mdat');
+          if (clearMdat) {
+            const first4 = clearMdat.data.readUInt32BE(8);
+            if (first4 === 0x00000001 || (first4 >>> 8) === 0x000001) {
+              nalCheck = 'NAL start code found ✓';
+            } else {
+              nalCheck = `No NAL start code. First 4 bytes: 0x${first4.toString(16).padStart(8, '0')}`;
+            }
+          }
+          decryptResult = `Success ${clear.length} bytes`;
+        } catch (e) {
+          decryptResult = `Failed: ${e.message}`;
+        }
+        
+        const report = `
+Segment URL: ${segUrl}
+Total size: ${data.length} bytes
+Top-level boxes: ${boxes.map(b => b.type).join(', ')}
+moof found: ${!!moof}
+senc found: ${sencFound} (size: ${sencSize} bytes)
+saio found: ${saioFound}
+saiz found: ${saizFound}
+
+Decryption: ${decryptResult}
+NAL check: ${nalCheck}
+`;
+        res.writeHead(200, { ...cors, 'Content-Type': 'text/plain' });
+        res.end(report);
+      } catch (err) {
+        res.writeHead(500, { ...cors, 'Content-Type': 'text/plain' });
+        res.end(`Error: ${err.message}`);
+      }
       return;
     }
 
